@@ -1,78 +1,50 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 
 	"github.com/IBM/sarama"
 )
 
 func main() {
-	// Kafka consumer configuration
+	// Kafka consumer configuration :9092
 	server := os.Getenv("KAFKA_SERVER")
 	fmt.Println("KAFKA_SERVER:", server)
 
-	// Create a new Kafka consumer configuration
+	// Create a new Kafka consumer config
 	config := sarama.NewConfig()
 	config.Consumer.Return.Errors = true
 
-	// Create a new Kafka consumer instance
+	// Create a new consumer instance
 	consumer, err := sarama.NewConsumer([]string{server}, config)
 	if err != nil {
-		fmt.Printf("Failed to create Kafka consumer: %s\n", err)
-		os.Exit(1)
+		fmt.Println("Failed to create consumer:", err)
 	}
 	defer func() {
 		if err := consumer.Close(); err != nil {
-			fmt.Printf("Failed to close Kafka consumer: %s\n", err)
+			fmt.Println("Failed to close consumer:", err)
 		}
 	}()
 
-	// Create a new Kafka consumer group handler
-	consumerGroup, err := sarama.NewConsumerGroup([]string{"localhost:9092"}, "my-group", config)
+	// Create a new consumer partition consumer
+	partitionConsumer, err := consumer.ConsumePartition("my-topic", 0, sarama.OffsetOldest)
 	if err != nil {
-		fmt.Printf("Failed to create Kafka consumer group: %s\n", err)
-		os.Exit(1)
+		fmt.Println("Failed to start consumer for partition:", err)
 	}
-	defer consumerGroup.Close()
-
-	// Start consuming messages
-	go func() {
-		for {
-			err := consumerGroup.Consume(context.Background(), nil, &consumers{})
-			if err != nil {
-				fmt.Printf("Error during message consumption: %s\n", err)
-			}
+	defer func() {
+		if err := partitionConsumer.Close(); err != nil {
+			fmt.Println("Failed to close consumer for partition:", err)
 		}
 	}()
 
-	// Wait for interrupt signal
-	sigchan := make(chan os.Signal, 1)
-	signal.Notify(sigchan, os.Interrupt)
-	<-sigchan
-}
-
-// consumer represents a Sarama consumer group consumer
-type consumers struct{}
-
-// Setup is run at the beginning of a new session, before ConsumeClaim
-func (consumer *consumers) Setup(sarama.ConsumerGroupSession) error {
-	return nil
-}
-
-// Cleanup is run at the end of a session, once all ConsumeClaim goroutines have exited
-func (consumer *consumers) Cleanup(sarama.ConsumerGroupSession) error {
-	return nil
-}
-
-// ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages()
-func (consumer *consumers) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	for message := range claim.Messages() {
-		fmt.Printf("Message claimed: value = %s, timestamp = %v, topic = %s\n", string(message.Value), message.Timestamp, message.Topic)
-		session.MarkMessage(message, "")
+	// Consume messages from the partition
+	for {
+		select {
+		case msg := <-partitionConsumer.Messages():
+			fmt.Printf("Received message on topic %s: %s\n", msg.Topic, string(msg.Value))
+		case err := <-partitionConsumer.Errors():
+			fmt.Printf("Consumer error: %s", err)
+		}
 	}
-
-	return nil
 }
